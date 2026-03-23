@@ -1,0 +1,440 @@
+// =============================================================================
+// COMPLETE TRADING STRATEGY — Pine Script v5
+// =============================================================================
+// Combines Technical Analysis + Market Intelligence signals:
+//   - Moving Averages (50/100/200) with Golden/Death Cross
+//   - RSI, MACD, Bollinger Bands
+//   - Volume trend analysis (buyer vs seller strength)
+//   - Support & Resistance auto-detection
+//   - Fibonacci retracement levels
+//   - Seasonal & day-of-week filters
+//   - Short squeeze momentum detection
+//   - Earnings gap behavior modeling
+//   - Sector rotation relative strength
+// =============================================================================
+
+//@version=5
+strategy("Complete Trading Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10, pyramiding=0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Moving Averages
+ma_fast   = input.int(50,  "Fast MA Period",   minval=5,  group="Moving Averages")
+ma_mid    = input.int(100, "Mid MA Period",    minval=10, group="Moving Averages")
+ma_slow   = input.int(200, "Slow MA Period",   minval=20, group="Moving Averages")
+
+// RSI
+rsi_len   = input.int(14, "RSI Period",        minval=2,  group="RSI")
+rsi_ob    = input.int(70, "RSI Overbought",    minval=50, group="RSI")
+rsi_os    = input.int(30, "RSI Oversold",      maxval=50, group="RSI")
+
+// MACD
+macd_fast = input.int(12, "MACD Fast",         minval=2,  group="MACD")
+macd_slow = input.int(26, "MACD Slow",         minval=2,  group="MACD")
+macd_sig  = input.int(9,  "MACD Signal",       minval=2,  group="MACD")
+
+// Bollinger Bands
+bb_len    = input.int(20,  "BB Period",        minval=5,  group="Bollinger Bands")
+bb_mult   = input.float(2.0, "BB Std Dev",     minval=0.5, step=0.1, group="Bollinger Bands")
+
+// Volume
+vol_len   = input.int(20, "Volume MA Period",  minval=5,  group="Volume")
+vol_spike = input.float(1.5, "Volume Spike Multiplier", minval=1.0, step=0.1, group="Volume")
+
+// Support / Resistance
+sr_left   = input.int(10, "S/R Pivot Left",    minval=2,  group="Support & Resistance")
+sr_right  = input.int(10, "S/R Pivot Right",   minval=2,  group="Support & Resistance")
+
+// Fibonacci
+fib_lookback = input.int(60, "Fib Lookback",   minval=10, group="Fibonacci")
+
+// Seasonal Filter
+use_seasonal    = input.bool(true, "Enable Seasonal Filter",          group="Seasonal")
+best_month_1    = input.int(1,  "Best Month #1 (1=Jan)",  minval=1, maxval=12, group="Seasonal")
+best_month_2    = input.int(4,  "Best Month #2",          minval=1, maxval=12, group="Seasonal")
+best_month_3    = input.int(11, "Best Month #3",          minval=1, maxval=12, group="Seasonal")
+worst_month_1   = input.int(6,  "Worst Month #1",         minval=1, maxval=12, group="Seasonal")
+worst_month_2   = input.int(9,  "Worst Month #2",         minval=1, maxval=12, group="Seasonal")
+
+// Day-of-Week Filter
+use_dow         = input.bool(false, "Enable Day-of-Week Filter",      group="Day of Week")
+allow_monday    = input.bool(true,  "Trade Monday",                    group="Day of Week")
+allow_tuesday   = input.bool(true,  "Trade Tuesday",                   group="Day of Week")
+allow_wednesday = input.bool(true,  "Trade Wednesday",                 group="Day of Week")
+allow_thursday  = input.bool(true,  "Trade Thursday",                  group="Day of Week")
+allow_friday    = input.bool(true,  "Trade Friday",                    group="Day of Week")
+
+// Short Squeeze
+use_squeeze     = input.bool(true, "Enable Squeeze Detection",        group="Short Squeeze")
+squeeze_bb_len  = input.int(20,    "Squeeze BB Length",    minval=5,  group="Short Squeeze")
+squeeze_kc_len  = input.int(20,    "Squeeze KC Length",    minval=5,  group="Short Squeeze")
+squeeze_kc_mult = input.float(1.5, "Squeeze KC Multiplier", minval=0.5, step=0.1, group="Short Squeeze")
+
+// Sector Rotation (compare vs benchmark)
+use_sector      = input.bool(false, "Enable Sector Rotation",         group="Sector Rotation")
+benchmark       = input.symbol("SPY", "Benchmark Symbol",             group="Sector Rotation")
+rs_period       = input.int(20, "Relative Strength Period", minval=5, group="Sector Rotation")
+
+// Scoring Weights
+w_ma     = input.float(1.5, "Weight: Moving Averages",  minval=0, step=0.1, group="Scoring")
+w_rsi    = input.float(1.0, "Weight: RSI",              minval=0, step=0.1, group="Scoring")
+w_macd   = input.float(1.0, "Weight: MACD",             minval=0, step=0.1, group="Scoring")
+w_bb     = input.float(0.5, "Weight: Bollinger Bands",  minval=0, step=0.1, group="Scoring")
+w_vol    = input.float(1.0, "Weight: Volume",            minval=0, step=0.1, group="Scoring")
+w_sqz    = input.float(1.0, "Weight: Squeeze",           minval=0, step=0.1, group="Scoring")
+w_sector = input.float(0.5, "Weight: Sector Rotation",   minval=0, step=0.1, group="Scoring")
+buy_threshold  = input.float(2.0,  "Buy Threshold",                   group="Scoring")
+sell_threshold = input.float(-2.0, "Sell Threshold",                   group="Scoring")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOVING AVERAGES
+// ─────────────────────────────────────────────────────────────────────────────
+
+sma50  = ta.sma(close, ma_fast)
+sma100 = ta.sma(close, ma_mid)
+sma200 = ta.sma(close, ma_slow)
+
+golden_cross = ta.crossover(sma50, sma200)
+death_cross  = ta.crossunder(sma50, sma200)
+
+ma_score = 0.0
+ma_score := sma50 > sma100 ? ma_score + 0.5 : ma_score - 0.5
+ma_score := sma50 > sma200 ? ma_score + 1.0 : ma_score - 1.0
+ma_score := close > sma50  ? ma_score + 0.5 : ma_score - 0.5
+
+plot(sma50,  "SMA 50",  color=color.new(color.blue, 0),   linewidth=1)
+plot(sma100, "SMA 100", color=color.new(color.orange, 0), linewidth=1)
+plot(sma200, "SMA 200", color=color.new(color.red, 0),    linewidth=2)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RSI
+// ─────────────────────────────────────────────────────────────────────────────
+
+rsi_val = ta.rsi(close, rsi_len)
+
+rsi_score = 0.0
+if rsi_val > rsi_ob
+    rsi_score := -1.0   // Overbought — pullback risk
+else if rsi_val > 55
+    rsi_score := 1.0    // Bullish momentum
+else if rsi_val > 45
+    rsi_score := 0.0    // Neutral
+else if rsi_val > rsi_os
+    rsi_score := -1.0   // Bearish momentum
+else
+    rsi_score := 1.0    // Oversold — bounce potential
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MACD
+// ─────────────────────────────────────────────────────────────────────────────
+
+[macd_line, signal_line, hist_line] = ta.macd(close, macd_fast, macd_slow, macd_sig)
+
+macd_bull_cross = ta.crossover(macd_line, signal_line)
+macd_bear_cross = ta.crossunder(macd_line, signal_line)
+
+macd_score = 0.0
+if hist_line > 0 and macd_line > 0
+    macd_score := 1.0    // Bullish — histogram & MACD above zero
+else if hist_line > 0
+    macd_score := 0.5    // Improving
+else if hist_line < 0 and macd_line < 0
+    macd_score := -1.0   // Bearish
+else
+    macd_score := -0.5   // Weakening
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOLLINGER BANDS
+// ─────────────────────────────────────────────────────────────────────────────
+
+bb_basis = ta.sma(close, bb_len)
+bb_dev   = bb_mult * ta.stdev(close, bb_len)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+bb_pct   = (close - bb_lower) / (bb_upper - bb_lower)
+
+bb_score = 0.0
+if close >= bb_upper
+    bb_score := -0.5   // Overbought / extended
+else if close <= bb_lower
+    bb_score := 0.5    // Oversold / bounce zone
+else
+    bb_score := 0.0
+
+p_bbu = plot(bb_upper, "BB Upper", color=color.new(color.gray, 60))
+p_bbl = plot(bb_lower, "BB Lower", color=color.new(color.gray, 60))
+fill(p_bbu, p_bbl, color=color.new(color.blue, 92))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VOLUME TREND ANALYSIS
+// ─────────────────────────────────────────────────────────────────────────────
+
+vol_ma       = ta.sma(volume, vol_len)
+vol_ratio    = volume / vol_ma
+is_vol_spike = vol_ratio > vol_spike
+
+// Buyer vs seller strength: up-volume vs down-volume
+up_vol   = close > open ? volume : 0.0
+down_vol = close < open ? volume : 0.0
+up_vol_ma   = ta.sma(up_vol, vol_len)
+down_vol_ma = ta.sma(down_vol, vol_len)
+vol_strength = up_vol_ma / math.max(down_vol_ma, 1)
+
+vol_score = 0.0
+if vol_ratio > vol_spike and close > open
+    vol_score := 1.0    // High volume bullish candle — buyers dominating
+else if vol_ratio > vol_spike and close < open
+    vol_score := -1.0   // High volume bearish candle — sellers dominating
+else if vol_strength > 1.3
+    vol_score := 0.5    // Moderate buying pressure
+else if vol_strength < 0.7
+    vol_score := -0.5   // Moderate selling pressure
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPPORT & RESISTANCE (Pivot-based)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pivot_high = ta.pivothigh(high, sr_left, sr_right)
+pivot_low  = ta.pivotlow(low, sr_left, sr_right)
+
+var float resistance = na
+var float support    = na
+
+if not na(pivot_high)
+    resistance := pivot_high
+if not na(pivot_low)
+    support := pivot_low
+
+near_support    = not na(support)    and math.abs(close - support)    / close < 0.02
+near_resistance = not na(resistance) and math.abs(close - resistance) / close < 0.02
+
+plot(support,    "Support",    color=color.new(color.green, 40), style=plot.style_circles, linewidth=2)
+plot(resistance, "Resistance", color=color.new(color.red, 40),   style=plot.style_circles, linewidth=2)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIBONACCI RETRACEMENT
+// ─────────────────────────────────────────────────────────────────────────────
+
+fib_high = ta.highest(high, fib_lookback)
+fib_low  = ta.lowest(low, fib_lookback)
+fib_diff = fib_high - fib_low
+
+fib_236 = fib_high - 0.236 * fib_diff
+fib_382 = fib_high - 0.382 * fib_diff
+fib_500 = fib_high - 0.500 * fib_diff
+fib_618 = fib_high - 0.618 * fib_diff
+fib_786 = fib_high - 0.786 * fib_diff
+
+plot(fib_236, "Fib 23.6%", color=color.new(color.yellow, 70), linewidth=1)
+plot(fib_382, "Fib 38.2%", color=color.new(color.orange, 70), linewidth=1)
+plot(fib_500, "Fib 50.0%", color=color.new(color.white, 70),  linewidth=1)
+plot(fib_618, "Fib 61.8%", color=color.new(color.aqua, 70),   linewidth=1)
+plot(fib_786, "Fib 78.6%", color=color.new(color.purple, 70), linewidth=1)
+
+// Near a fib bounce zone?
+near_fib = (math.abs(close - fib_382) / close < 0.01) or (math.abs(close - fib_500) / close < 0.01) or (math.abs(close - fib_618) / close < 0.01)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEASONAL FILTER
+// ─────────────────────────────────────────────────────────────────────────────
+
+current_month = month(time)
+is_best_month  = current_month == best_month_1  or current_month == best_month_2  or current_month == best_month_3
+is_worst_month = current_month == worst_month_1 or current_month == worst_month_2
+
+seasonal_score = 0.0
+if use_seasonal
+    seasonal_score := is_best_month ? 0.5 : is_worst_month ? -0.5 : 0.0
+
+seasonal_ok = use_seasonal ? not is_worst_month : true
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAY-OF-WEEK FILTER
+// ─────────────────────────────────────────────────────────────────────────────
+
+current_dow = dayofweek(time)
+dow_ok = true
+if use_dow
+    dow_ok := (current_dow == dayofweek.monday    and allow_monday)    or (current_dow == dayofweek.tuesday   and allow_tuesday)   or (current_dow == dayofweek.wednesday and allow_wednesday) or (current_dow == dayofweek.thursday  and allow_thursday)  or (current_dow == dayofweek.friday    and allow_friday)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHORT SQUEEZE DETECTION (Bollinger inside Keltner = squeeze)
+// ─────────────────────────────────────────────────────────────────────────────
+
+sqz_bb_basis = ta.sma(close, squeeze_bb_len)
+sqz_bb_dev   = 2.0 * ta.stdev(close, squeeze_bb_len)
+sqz_bb_upper = sqz_bb_basis + sqz_bb_dev
+sqz_bb_lower = sqz_bb_basis - sqz_bb_dev
+
+sqz_kc_basis = ta.sma(close, squeeze_kc_len)
+sqz_kc_range = ta.sma(ta.tr, squeeze_kc_len)
+sqz_kc_upper = sqz_kc_basis + squeeze_kc_mult * sqz_kc_range
+sqz_kc_lower = sqz_kc_basis - squeeze_kc_mult * sqz_kc_range
+
+squeeze_on  = sqz_bb_lower > sqz_kc_lower and sqz_bb_upper < sqz_kc_upper
+squeeze_off = sqz_bb_lower < sqz_kc_lower or  sqz_bb_upper > sqz_kc_upper
+
+// Momentum for squeeze direction
+sqz_mom = ta.linreg(close - math.avg(ta.highest(high, squeeze_kc_len), ta.lowest(low, squeeze_kc_len)), squeeze_kc_len, 0)
+
+squeeze_score = 0.0
+if use_squeeze
+    if squeeze_on
+        squeeze_score := 0.0    // Coiling — waiting for breakout
+    else if squeeze_off and sqz_mom > 0
+        squeeze_score := 1.0    // Squeeze fired bullish
+    else if squeeze_off and sqz_mom < 0
+        squeeze_score := -1.0   // Squeeze fired bearish
+
+// Visual: dots below bars when squeeze is on
+plotshape(use_squeeze and squeeze_on,  title="Squeeze ON",  style=shape.diamond, location=location.belowbar, color=color.new(color.red, 0),   size=size.tiny)
+plotshape(use_squeeze and squeeze_off and sqz_mom > 0, title="Squeeze Fire Bull", style=shape.diamond, location=location.belowbar, color=color.new(color.lime, 0),  size=size.tiny)
+plotshape(use_squeeze and squeeze_off and sqz_mom < 0, title="Squeeze Fire Bear", style=shape.diamond, location=location.belowbar, color=color.new(color.orange, 0), size=size.tiny)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTOR ROTATION — Relative Strength vs Benchmark
+// ─────────────────────────────────────────────────────────────────────────────
+
+bench_close = request.security(benchmark, timeframe.period, close)
+rs_line     = close / bench_close
+rs_ma       = ta.sma(rs_line, rs_period)
+
+sector_score = 0.0
+if use_sector
+    if rs_line > rs_ma and rs_line > rs_line[1]
+        sector_score := 1.0     // Leading — outperforming & improving
+    else if rs_line > rs_ma
+        sector_score := 0.5     // Outperforming but weakening
+    else if rs_line < rs_ma and rs_line < rs_line[1]
+        sector_score := -1.0    // Lagging — underperforming & deteriorating
+    else
+        sector_score := -0.5    // Underperforming but improving
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EARNINGS GAP BEHAVIOR (price gaps on high volume)
+// ─────────────────────────────────────────────────────────────────────────────
+
+gap_up   = low > high[1]   and vol_ratio > 2.0
+gap_down = high < low[1]   and vol_ratio > 2.0
+
+// Track if gaps tend to fade or continue (rolling)
+var int   gap_up_count   = 0
+var int   gap_up_faded   = 0
+var float last_gap_high  = na
+
+if gap_up
+    gap_up_count += 1
+    last_gap_high := high
+
+if not na(last_gap_high) and bar_index > 0
+    if close < last_gap_high and ta.barssince(gap_up) == 5
+        gap_up_faded += 1
+        last_gap_high := na
+
+earnings_score = 0.0
+if gap_up
+    earnings_score := 1.0   // Fresh gap up — bullish momentum
+else if gap_down
+    earnings_score := -1.0  // Fresh gap down — bearish
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPOSITE SCORING ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+
+composite = (ma_score * w_ma) + (rsi_score * w_rsi) + (macd_score * w_macd) + (bb_score * w_bb) + (vol_score * w_vol) + (squeeze_score * w_sqz) + (sector_score * w_sector) + seasonal_score + earnings_score
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIGNAL GENERATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+long_condition  = composite >= buy_threshold  and seasonal_ok and dow_ok
+short_condition = composite <= sell_threshold and dow_ok
+
+// Entry
+if long_condition and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+
+if short_condition and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short)
+
+// Exit on signal flip
+if strategy.position_size > 0 and composite <= 0
+    strategy.close("Long", comment="Score neutral")
+
+if strategy.position_size < 0 and composite >= 0
+    strategy.close("Short", comment="Score neutral")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VISUALS & DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Background tint based on composite
+bg_col = composite >= buy_threshold ? color.new(color.green, 90) : composite <= sell_threshold ? color.new(color.red, 90) : color.new(color.gray, 95)
+bgcolor(bg_col, title="Signal Background")
+
+// Golden / Death cross markers
+plotshape(golden_cross, title="Golden Cross", style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="GC")
+plotshape(death_cross,  title="Death Cross",  style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small, text="DC")
+
+// MACD crosses
+plotshape(macd_bull_cross, title="MACD Bull", style=shape.circle, location=location.belowbar, color=color.new(color.lime, 0),  size=size.tiny)
+plotshape(macd_bear_cross, title="MACD Bear", style=shape.circle, location=location.abovebar, color=color.new(color.fuchsia, 0), size=size.tiny)
+
+// ── Dashboard Table ──
+var table dash = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 20), border_width=1)
+
+if barstate.islast
+    signal_text  = composite >= buy_threshold ? "STRONG BUY" : composite > 0 ? "BUY" : composite > sell_threshold ? "HOLD" : composite > -4 ? "SELL" : "STRONG SELL"
+    signal_color = composite >= buy_threshold ? color.lime : composite > 0 ? color.green : composite > sell_threshold ? color.gray : color.red
+
+    table.cell(dash, 0, 0,  "SIGNAL",         text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0,  signal_text,       text_color=signal_color, text_size=size.normal)
+    table.cell(dash, 0, 1,  "Composite",       text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 1,  str.tostring(composite, "#.#"), text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 0, 2,  "MA Score",        text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 2,  str.tostring(ma_score, "#.#"),  text_color=ma_score > 0 ? color.lime : color.red, text_size=size.tiny)
+    table.cell(dash, 0, 3,  "RSI",             text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 3,  str.tostring(rsi_val, "#.#"),   text_color=rsi_val > rsi_ob ? color.red : rsi_val < rsi_os ? color.lime : color.white, text_size=size.tiny)
+    table.cell(dash, 0, 4,  "MACD Hist",       text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 4,  str.tostring(hist_line, "#.##"), text_color=hist_line > 0 ? color.lime : color.red, text_size=size.tiny)
+    table.cell(dash, 0, 5,  "BB %",            text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 5,  str.tostring(bb_pct * 100, "#") + "%", text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 0, 6,  "Vol Ratio",       text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 6,  str.tostring(vol_ratio, "#.##"), text_color=is_vol_spike ? color.yellow : color.white, text_size=size.tiny)
+    table.cell(dash, 0, 7,  "Squeeze",         text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 7,  squeeze_on ? "ON" : sqz_mom > 0 ? "FIRE ▲" : "FIRE ▼", text_color=squeeze_on ? color.red : sqz_mom > 0 ? color.lime : color.orange, text_size=size.tiny)
+    table.cell(dash, 0, 8,  "Support",         text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 8,  str.tostring(support, "#.##"),    text_color=color.green, text_size=size.tiny)
+    table.cell(dash, 0, 9,  "Resistance",      text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 9,  str.tostring(resistance, "#.##"), text_color=color.red, text_size=size.tiny)
+    table.cell(dash, 0, 10, "Season",          text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 10, is_best_month ? "BEST" : is_worst_month ? "WORST" : "NEUTRAL", text_color=is_best_month ? color.lime : is_worst_month ? color.red : color.gray, text_size=size.tiny)
+    table.cell(dash, 0, 11, "Rel Strength",    text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 11, use_sector ? str.tostring(sector_score, "#.#") : "OFF", text_color=sector_score > 0 ? color.lime : sector_score < 0 ? color.red : color.gray, text_size=size.tiny)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+alertcondition(long_condition  and strategy.position_size <= 0, title="Buy Signal",  message="BUY — Composite score: {{plot_0}}")
+alertcondition(short_condition and strategy.position_size >= 0, title="Sell Signal", message="SELL — Composite score: {{plot_0}}")
+alertcondition(golden_cross, title="Golden Cross", message="Golden Cross detected — 50 MA crossed above 200 MA")
+alertcondition(death_cross,  title="Death Cross",  message="Death Cross detected — 50 MA crossed below 200 MA")
+alertcondition(squeeze_on and not squeeze_on[1], title="Squeeze Started", message="Volatility squeeze detected — breakout imminent")
