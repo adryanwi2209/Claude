@@ -439,4 +439,110 @@ if __name__ == "__main__":
         sample_prices.append(round(price, 2))
         sample_volumes.append(random.randint(500_000, 5_000_000))
 
-    run_analysis(sample_prices, sample_volumes)
+    ta_result = run_analysis(sample_prices, sample_volumes)
+
+    # -----------------------------------------------------------------------
+    # Market Intelligence layer
+    # -----------------------------------------------------------------------
+    from market_intelligence import (
+        analyze_seasonal_patterns,
+        analyze_day_of_week,
+        analyze_event_correlation,
+        analyze_insider_activity,
+        analyze_institutional_ownership,
+        analyze_short_interest,
+        detect_unusual_options,
+        analyze_earnings_behavior,
+        analyze_sector_rotation,
+        print_market_intelligence_report,
+    )
+
+    monthly_ret = {m: [random.gauss(0.01 if m in (1, 4, 11) else -0.005, 0.04)
+                       for _ in range(10)] for m in range(1, 13)}
+    seasonal = analyze_seasonal_patterns(monthly_ret)
+
+    dow_data = [(d, random.gauss(0.001 if d in (0, 4) else -0.0005, 0.01))
+                for _ in range(200) for d in range(5)]
+    day_of_week = analyze_day_of_week(dow_data)
+
+    event_rets = {
+        "fed_meetings": [(f"2025-{m:02d}-15", random.gauss(0, 0.015), random.gauss(0.002, 0.02))
+                         for m in range(1, 13, 2)],
+        "cpi_reports": [(f"2025-{m:02d}-10", random.gauss(-0.005, 0.02), random.gauss(0, 0.025))
+                        for m in range(1, 13)],
+    }
+    event_corr = analyze_event_correlation(event_rets)
+
+    insider = analyze_insider_activity([
+        {"name": "Jane CEO", "role": "CEO", "type": "buy", "shares": 10000, "price": 145.0, "date": "2025-11-01"},
+        {"name": "John CFO", "role": "CFO", "type": "buy", "shares": 5000, "price": 142.0, "date": "2025-11-15"},
+        {"name": "VP Sales", "role": "VP", "type": "sell", "shares": 2000, "price": 150.0, "date": "2025-12-01"},
+    ])
+
+    institutional = analyze_institutional_ownership([
+        {"quarter": "Q2 2025", "institutional_pct": 72.5, "num_holders": 450, "shares_held": 50_000_000},
+        {"quarter": "Q3 2025", "institutional_pct": 75.2, "num_holders": 465, "shares_held": 52_000_000},
+    ])
+
+    short_info = analyze_short_interest({
+        "short_pct_float": 18.5, "short_ratio": 5.2, "prev_short_pct": 15.0,
+        "avg_volume": 3_000_000, "shares_short": 12_000_000, "cost_to_borrow": 35.0,
+    })
+
+    options = detect_unusual_options([
+        {"type": "call", "strike": 160, "expiry": "2026-01-16", "volume": 8500,
+         "open_interest": 1200, "premium": 3.50, "implied_vol": 0.55},
+        {"type": "put", "strike": 130, "expiry": "2026-01-16", "volume": 3000,
+         "open_interest": 2500, "premium": 1.80, "implied_vol": 0.48},
+    ])
+
+    earnings = analyze_earnings_behavior([
+        {"date": "2025-01-25", "eps_surprise_pct": 5.2, "pre_5d_return": 0.03,
+         "post_1d_gap": 0.04, "post_5d_return": 0.02},
+        {"date": "2025-04-24", "eps_surprise_pct": -1.0, "pre_5d_return": 0.02,
+         "post_1d_gap": -0.03, "post_5d_return": -0.05},
+        {"date": "2025-07-24", "eps_surprise_pct": 3.8, "pre_5d_return": 0.04,
+         "post_1d_gap": 0.06, "post_5d_return": 0.08},
+        {"date": "2025-10-23", "eps_surprise_pct": 2.1, "pre_5d_return": 0.01,
+         "post_1d_gap": 0.02, "post_5d_return": 0.01},
+    ])
+
+    sector = analyze_sector_rotation({
+        "stock_sector": "Technology",
+        "sector_returns_1m": {
+            "Technology": 0.05, "Healthcare": 0.02, "Financials": 0.03,
+            "Energy": -0.02, "Consumer Disc.": 0.01, "Industrials": 0.04,
+            "Utilities": -0.01, "Real Estate": -0.03, "Materials": 0.00,
+            "Comm. Services": 0.03, "Consumer Staples": 0.01,
+        },
+        "stock_return_1m": 0.07,
+        "sector_etf_return_1m": 0.05,
+        "market_return_1m": 0.02,
+    })
+
+    mi_result = print_market_intelligence_report(
+        seasonal, day_of_week, event_corr, insider, institutional,
+        short_info, options, earnings, sector,
+    )
+
+    # Combined final verdict
+    combined = ta_result["score"] + mi_result["score"]
+    if combined >= 5:
+        verdict = "STRONG BUY"
+    elif combined >= 2:
+        verdict = "BUY"
+    elif combined > -2:
+        verdict = "HOLD"
+    elif combined > -5:
+        verdict = "SELL"
+    else:
+        verdict = "STRONG SELL"
+
+    print("=" * 64)
+    print("         COMBINED VERDICT (Technical + Intelligence)")
+    print("=" * 64)
+    print(f"  Technical Score    : {ta_result['score']:+.1f}  ({ta_result['signal']})")
+    print(f"  Intelligence Score : {mi_result['score']:+.1f}  ({mi_result['signal']})")
+    print(f"  Combined Score     : {combined:+.1f}")
+    print(f"  FINAL SIGNAL       : {verdict}")
+    print("=" * 64)
